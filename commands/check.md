@@ -1,6 +1,6 @@
 ---
 description: Vet a plugin source before installing — clone, scan with vexscan, review with Claude, return a verdict.
-argument-hint: "<git-url>"
+argument-hint: "<git-url> [--branch <ref>] [--path <subpath>]"
 allowed-tools: "Bash, Task"
 ---
 
@@ -11,6 +11,8 @@ Vet a plugin or component before installing. Clones the source to a staging dire
 ## Usage
 
 - `/sigil:check <git-url>` — vet the source at the given git URL.
+- `/sigil:check <git-url> --branch <ref>` — vet a non-default branch, tag, or commit SHA.
+- `/sigil:check <git-url> --path <subpath>` — vet only a subdirectory of the clone (e.g. `--path plugin` for monorepo plugins). The path is validated to stay within the clone.
 
 ## What it does
 

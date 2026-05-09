@@ -23,11 +23,18 @@ source "${SCRIPT_DIR}/lib/vexscan/lib.sh"
 
 usage() {
     cat <<EOF
-Usage: sigil-check.sh <git-url>
+Usage: sigil-check.sh <git-url> [--branch <ref>] [--path <subpath>]
 
 Clones the source to ~/.sigil/staging/check-XXX/repo and runs vexscan
 against it. Prints labeled output for the slash command to feed into
 a Claude subagent for verdict generation.
+
+  --branch <ref>     Clone a non-default branch, tag, or commit SHA.
+                     Tries shallow clone (-b) first; falls back to a
+                     full clone with checkout if the ref is a SHA.
+  --path <subpath>   Scan only a subdirectory of the clone (e.g.
+                     for a monorepo plugin). The path is validated
+                     to stay within the clone.
 EOF
 }
 
@@ -41,11 +48,29 @@ if ! command -v git &> /dev/null; then
 fi
 
 URL=""
+BRANCH=""
+SUBPATH=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)
             usage
             exit 0
+            ;;
+        --branch)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "ERROR: --branch requires a value" >&2
+                exit 1
+            fi
+            BRANCH="$1"
+            ;;
+        --path)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "ERROR: --path requires a value" >&2
+                exit 1
+            fi
+            SUBPATH="$1"
             ;;
         --*)
             echo "ERROR: unknown flag: $1" >&2
@@ -72,11 +97,12 @@ if [[ -z "${URL}" ]]; then
 fi
 
 # Loose URL validation — accept the common git-clone-able forms.
+# file:// is allowed for local fixtures and manually-downloaded sources.
 case "${URL}" in
-    https://*|http://*|git://*|git@*|ssh://*) ;;
+    https://*|http://*|git://*|git@*|ssh://*|file://*) ;;
     *)
         echo "ERROR: not a git URL: ${URL}" >&2
-        echo "       Expected one of: https://..., http://..., git://..., git@host:..., ssh://..." >&2
+        echo "       Expected one of: https://..., http://..., git://..., git@host:..., ssh://..., file://..." >&2
         exit 1
         ;;
 esac
@@ -85,18 +111,62 @@ sigil_vexscan_require_installed || exit 1
 sigil_ensure_state_dir
 
 STAGE_ROOT="$(mktemp -d "${SIGIL_STAGING_DIR}/check-XXXXXX")"
-REPO_DIR="${STAGE_ROOT}/repo"
+CLONE_DIR="${STAGE_ROOT}/repo"
 SCAN_JSON="${STAGE_ROOT}/scan.json"
 
 echo "Cloning ${URL}..." >&2
-# Shallow clone — we just want the tip for scanning, not history.
-if ! git clone --quiet --depth 1 "${URL}" "${REPO_DIR}" 2>&1; then
-    rm -rf "${STAGE_ROOT}"
-    echo "ERROR: failed to clone ${URL}" >&2
-    exit 1
+if [[ -n "${BRANCH}" ]]; then
+    # Try shallow clone with -b first (works for branches and tags). If
+    # that fails (e.g., the ref is an arbitrary SHA), fall back to a
+    # full clone and checkout the ref.
+    if ! git clone --quiet --depth 1 -b "${BRANCH}" "${URL}" "${CLONE_DIR}" 2>/dev/null; then
+        if ! git clone --quiet "${URL}" "${CLONE_DIR}" 2>/dev/null; then
+            rm -rf "${STAGE_ROOT}"
+            echo "ERROR: failed to clone ${URL}" >&2
+            exit 1
+        fi
+        if ! git -C "${CLONE_DIR}" checkout --quiet "${BRANCH}" 2>/dev/null; then
+            rm -rf "${STAGE_ROOT}"
+            echo "ERROR: failed to checkout '${BRANCH}' in ${URL}" >&2
+            exit 1
+        fi
+    fi
+else
+    # Shallow clone of the default branch — we just want the tip for scanning.
+    if ! git clone --quiet --depth 1 "${URL}" "${CLONE_DIR}" 2>&1; then
+        rm -rf "${STAGE_ROOT}"
+        echo "ERROR: failed to clone ${URL}" >&2
+        exit 1
+    fi
 fi
 
-COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+COMMIT="$(git -C "${CLONE_DIR}" rev-parse HEAD)"
+
+# Resolve --path to an absolute, physically-canonical path. `pwd -P`
+# resolves symlinks to their physical target, so a malicious repo
+# containing a symlink at the --path target (e.g., `plugin -> /etc`)
+# can't escape the clone — we'd resolve to /etc and the under-clone
+# check would reject it.
+if [[ -n "${SUBPATH}" ]]; then
+    if [[ "${SUBPATH}" == /* ]]; then
+        rm -rf "${STAGE_ROOT}"
+        echo "ERROR: --path must be a relative subpath, not an absolute path" >&2
+        exit 1
+    fi
+    REPO_DIR="$(cd "${CLONE_DIR}/${SUBPATH}" 2>/dev/null && pwd -P)" || {
+        rm -rf "${STAGE_ROOT}"
+        echo "ERROR: --path '${SUBPATH}' does not exist or is not a directory in the clone" >&2
+        exit 1
+    }
+    ABS_CLONE="$(cd "${CLONE_DIR}" && pwd -P)"
+    if [[ "${REPO_DIR}" != "${ABS_CLONE}" && "${REPO_DIR}" != "${ABS_CLONE}/"* ]]; then
+        rm -rf "${STAGE_ROOT}"
+        echo "ERROR: --path '${SUBPATH}' escapes the clone directory (possibly via symlink)" >&2
+        exit 1
+    fi
+else
+    REPO_DIR="${CLONE_DIR}"
+fi
 
 echo "Scanning with vexscan..." >&2
 # --ast: catch obfuscation. --deps: supply-chain checks. --skip-deps:
@@ -134,15 +204,17 @@ read -r CRITICAL HIGH MEDIUM LOW INFO <<< "$(jq -r '
     ] | @tsv
 ' "${SCAN_JSON}")"
 
-cat <<EOF
-=== Sigil check ===
-URL:        ${URL}
-Commit:     ${COMMIT}
-Stage root: ${STAGE_ROOT}
-Repo:       ${REPO_DIR}
-Scan:       ${SCAN_JSON}
-Summary:    ${CRITICAL} critical, ${HIGH} high, ${MEDIUM} medium, ${LOW} low, ${INFO} info
-
-=== Vexscan findings (JSON) ===
-EOF
+{
+    echo "=== Sigil check ==="
+    echo "URL:        ${URL}"
+    [[ -n "${BRANCH}" ]] && echo "Branch:     ${BRANCH}"
+    [[ -n "${SUBPATH}" ]] && echo "Path:       ${SUBPATH}"
+    echo "Commit:     ${COMMIT}"
+    echo "Stage root: ${STAGE_ROOT}"
+    echo "Repo:       ${REPO_DIR}"
+    echo "Scan:       ${SCAN_JSON}"
+    echo "Summary:    ${CRITICAL} critical, ${HIGH} high, ${MEDIUM} medium, ${LOW} low, ${INFO} info"
+    echo ""
+    echo "=== Vexscan findings (JSON) ==="
+}
 cat "${SCAN_JSON}"
