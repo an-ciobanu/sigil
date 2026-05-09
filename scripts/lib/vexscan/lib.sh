@@ -26,6 +26,9 @@ source "${_VEXSCAN_LIB_DIR}/pin.sh"
 
 VEXSCAN_PIN_LOCKFILE="${_VEXSCAN_LIB_DIR}/Cargo.lock"
 VEXSCAN_PIN_CHECKSUMS="${_VEXSCAN_LIB_DIR}/checksums.txt"
+# Absolute path to the bootstrap entrypoint, suitable for inclusion in
+# user-facing error messages.
+_VEXSCAN_BOOTSTRAP_SCRIPT="$( cd "${_VEXSCAN_LIB_DIR}/../.." && pwd )/sigil-bootstrap-vexscan.sh"
 
 # Override for testing or forks. Default is the canonical Sigil repo.
 SIGIL_VEXSCAN_RELEASE_BASE="${SIGIL_VEXSCAN_RELEASE_BASE:-https://github.com/an-ciobanu/sigil}"
@@ -243,4 +246,60 @@ sigil_vexscan_bootstrap() {
     fi
 
     sigil_vexscan_install_from_source
+}
+
+# Returns 0 if the pinned vexscan binary is present and executable.
+# Otherwise prints a user-actionable error and returns 1. Use this in
+# downstream callers (slash commands, hooks) that need vexscan available
+# but should fail clearly rather than with a cryptic command-not-found.
+sigil_vexscan_require_installed() {
+    if sigil_vexscan_is_installed; then
+        return 0
+    fi
+    local binary_path
+    binary_path="$(sigil_vexscan_binary_path)"
+    cat >&2 <<EOF
+ERROR: vexscan is not installed at ${binary_path}
+
+Sigil needs the pinned vexscan binary to run security scans. Install it:
+
+  ${_VEXSCAN_BOOTSTRAP_SCRIPT}
+
+This downloads a pre-built binary if one is available for your platform,
+otherwise builds from source (~2 minutes; requires the Rust toolchain).
+To force the source build (skip the maintainer release):
+
+  SIGIL_VEXSCAN_FROM_SOURCE=1 ${_VEXSCAN_BOOTSTRAP_SCRIPT}
+EOF
+    return 1
+}
+
+# Smoke-test the installed binary by running --version. Catches the case
+# where the binary file exists at the expected path but doesn't actually
+# run (corrupted, wrong arch, missing dynamic libraries, etc.).
+# Returns 0 on success, 1 on failure (prints a clear remediation hint).
+sigil_vexscan_verify() {
+    sigil_vexscan_require_installed || return 1
+    local binary
+    binary="$(sigil_vexscan_binary_path)"
+    if ! "${binary}" --version &>/dev/null; then
+        cat >&2 <<EOF
+ERROR: vexscan at ${binary} exists but does not run.
+       The binary may be corrupted or built for a different platform.
+       Remove it and re-bootstrap:
+
+         rm "${binary}"
+         ${_VEXSCAN_BOOTSTRAP_SCRIPT}
+EOF
+        return 1
+    fi
+    return 0
+}
+
+# Run vexscan with the given arguments. Fails fast with a clear error if
+# the binary is missing. Does NOT smoke-test (use sigil_vexscan_verify for
+# that) to avoid an extra subprocess on every call.
+sigil_vexscan_run() {
+    sigil_vexscan_require_installed || return $?
+    "$(sigil_vexscan_binary_path)" "$@"
 }
