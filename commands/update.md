@@ -1,19 +1,26 @@
 ---
-description: Review and apply a pending update for a tracked source — diff against the approved SHA, scan, Claude review, install on approval.
-argument-hint: "<name> [--accept-risky]"
+description: Review and apply pending updates for tracked sources — diff against the approved SHA, scan, Claude review, install on approval. Named or bulk.
+argument-hint: "[<name>] [--accept-risky]"
 allowed-tools: "Bash, Task"
 ---
 
 # /sigil:update
 
-Review a pending update for a Sigil-tracked source AND apply it if the verdict allows. Clones the upstream tip, diffs against the approved `current_sha`, runs vexscan on the new state, has a Claude subagent review the **diff** semantically (not the full codebase), and — gated on the verdict — atomically replaces the install_path and bumps `current_sha` + `installed_at` in the manifest.
+Review pending updates for Sigil-tracked sources AND apply them if the verdict allows. Two modes:
+
+- **Named:** `/sigil:update <name>` reviews and (if approved) applies a single source's pending update.
+- **Bulk:** `/sigil:update` (no name) walks every tracked source whose upstream HEAD differs from the approved `current_sha` and runs the named flow on each, in turn.
+
+For each update Sigil clones the upstream tip, diffs against the approved `current_sha`, runs vexscan on the new state, has a Claude subagent review the **diff** semantically (not the full codebase), and — gated on the verdict — atomically replaces the install_path and bumps `current_sha` + `installed_at` in the manifest.
 
 ## Usage
 
 - `/sigil:update <name>` — review and (if the verdict allows) apply the update for the named source.
-- `/sigil:update <name> --accept-risky` — apply even if the verdict is `RISKY` (acknowledges you've reviewed the flagged code).
+- `/sigil:update <name> --accept-risky` — apply even if the verdict is `RISKY` for that source.
+- `/sigil:update` — walk every pending update interactively. Each is reviewed independently with its own subagent. Same gate matrix per source.
+- `/sigil:update --accept-risky` — bulk update; pre-approve `RISKY` verdicts for every pending source. `DANGEROUS` is still refused (no override).
 
-`<name>` must match a Sigil-tracked entry. Find names with `/sigil:status`. Untracked entries (kind=untracked, no source URL) cannot be updated. Only `kind=claude-plugin` is supported in this story; `rust-cargo` will land in a follow-up.
+`<name>` (named mode) must match a Sigil-tracked entry. Find names with `/sigil:status`. Untracked entries (kind=untracked, no source URL) cannot be updated. Only `kind=claude-plugin` is supported in this story; `rust-cargo` will land in a follow-up.
 
 ## Gate matrix
 
@@ -38,6 +45,18 @@ Review a pending update for a Sigil-tracked source AND apply it if the verdict a
 ## Instructions
 
 **Always run the verdict review as a Task subagent so the staged code doesn't pollute the main conversation.**
+
+### Mode detection
+
+Tokenize `$ARGUMENTS`. For each token:
+
+- If the token does not start with `--`, treat the FIRST such token as `<name>` and follow the **Single-update flow** below.
+- The flag `--accept-risky` is recognized in both modes.
+- Any other token starting with `--` is an error: present `Unknown flag: <flag>` to the user and stop. (This catches typos like `--acceptrisky` rather than silently routing them into bulk mode.)
+
+If no positional token is present, follow the **Bulk flow** at the end of this document.
+
+### Single-update flow
 
 Step 1 — stage the upstream and compute the diff:
 
@@ -172,3 +191,35 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/sigil-cleanup-stage.sh <Stage root from Step 1>
 ```
 
 The cleanup helper validates the path is strictly under `~/.sigil/staging/` and is silent on success.
+
+### Bulk flow
+
+This branch executes only when no `<name>` is given. It walks every tracked source with a pending upstream update and runs the **Single-update flow** above on each, in turn.
+
+Step B1 — list pending updates:
+
+!`${CLAUDE_PLUGIN_ROOT}/scripts/sigil-update-list-pending.sh`
+
+The output is one source name per line (silent / empty if nothing is pending). The output above is captured at command-load time and is the **authoritative list for this run**. Do not call `list-pending` again mid-loop — once any update applies, the manifest changes and a fresh list would skip the just-updated entry.
+
+Step B2 — if the list is empty, present "No pending updates." to the user and stop.
+
+Step B3 — for each name in the list, in order, execute the **Single-update flow** (Steps 1-6 above) **as a self-contained iteration**. Concretely:
+
+- Treat each iteration as if the user had typed `/sigil:update <name> [--accept-risky]`, where the `--accept-risky` flag is forwarded only if it was present in the original `$ARGUMENTS`.
+- Spawn a fresh Task subagent per iteration. Don't share subagent context across iterations — each diff is reviewed in isolation, and a verdict for one source must not influence another.
+- After each iteration's verdict and (apply or refuse), present its output to the user immediately so they can follow along, then move to the next name.
+- Track per-iteration outcomes for the final summary: `applied` / `refused-risky` / `refused-dangerous` / `errored` / `up-to-date` (the latter only if `list-pending` raced with a SessionStart that already advanced state).
+- After EACH iteration completes, append a one-line tally to your output of the form `[i/N] <name>: <outcome>` (e.g. `[2/5] foo: applied`). Aggregate the per-iteration outcomes from these lines for the B4 summary — this externalizes the running state so it's recoverable even if attention drifts mid-loop.
+
+Step B4 — after every iteration completes, print a final summary line:
+
+```
+Bulk update complete: A applied, R refused (RISKY), D refused (DANGEROUS), E errored.
+```
+
+Substitute the counts. If a count is zero, still include it — symmetric output is easier to scan.
+
+Bulk mode notes:
+- The fan-out is one Task subagent per pending source. For users with many tracked sources this can be slow; named mode lets you do them one at a time.
+- Errors during one iteration (force-pushed history, clone failure) don't abort the bulk — they're surfaced inline and counted in the summary, then the next iteration continues.
