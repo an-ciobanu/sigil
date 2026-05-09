@@ -1,0 +1,33 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+CLAUDE.md
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temp files
+*.tmp
+*.bak
+
+# Sigil runtime data (in case of accidental clone into a working dir)
+.sigil/
+
+# Local-only roadmap (not part of the project's history)
+USER-STORIES.md
+
+# Build artifacts (relevant once rust-cargo / npm sources land)
+target/
+node_modules/
+__pycache__/
+*.pyc
