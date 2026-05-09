@@ -38,6 +38,8 @@ source "${SCRIPT_DIR}/lib/state.sh"
 source "${SCRIPT_DIR}/lib/upstream.sh"
 # shellcheck source=lib/vexscan/lib.sh
 source "${SCRIPT_DIR}/lib/vexscan/lib.sh"
+# shellcheck source=lib/config.sh
+source "${SCRIPT_DIR}/lib/config.sh"
 
 # Stay silent (exit 0, no output) if anything blocks our work — this
 # hook should never fail in a way that disrupts the user's session.
@@ -83,8 +85,12 @@ MEDIUM=0
 # The user will see an actionable error the next time they run
 # /sigil:check, /sigil:scan, or any flow that requires vexscan.
 if [[ -d "${HOME}/.claude" ]] && sigil_vexscan_is_installed; then
+    # Honors ~/.sigil/config.json's min_severity if set; falls back to
+    # "medium". See docs/config.md for the schema.
+    MIN_SEVERITY="$(sigil_config_get_min_severity)"
+
     SCAN_OUTPUT="$(sigil_vexscan_run scan "${HOME}/.claude" \
-        --third-party-only --skip-deps --min-severity medium \
+        --third-party-only --skip-deps --min-severity "${MIN_SEVERITY}" \
         -f json 2>/dev/null)" || true
 
     if [[ -n "${SCAN_OUTPUT}" ]] && jq empty <<<"${SCAN_OUTPUT}" 2>/dev/null; then
