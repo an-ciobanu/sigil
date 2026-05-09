@@ -19,6 +19,8 @@ source "${SCRIPT_DIR}/lib/state.sh"
 source "${SCRIPT_DIR}/lib/manifest.sh"
 # shellcheck source=lib/vexscan/lib.sh
 source "${SCRIPT_DIR}/lib/vexscan/lib.sh"
+# shellcheck source=lib/config.sh
+source "${SCRIPT_DIR}/lib/config.sh"
 
 usage() {
     cat <<EOF
@@ -31,8 +33,11 @@ Usage: sigil-scan.sh [<name>] [--min-severity <level>]
   --min-severity     Severity floor passed through to vexscan. One of
                      info, low, medium (default), high, critical.
 
-Runs with --ast --deps for thorough analysis, plus --skip-deps so
-vendored node_modules trees don't drown the signal.
+Runs with --ast (obfuscation detection) and --deps (supply-chain
+checks of declared dependencies). The complementary --skip-deps tells
+vexscan not to recurse into vendored node_modules trees during the
+file walk — together they enable dep analysis without drowning the
+signal in vendored code.
 EOF
 }
 
@@ -42,7 +47,10 @@ if ! command -v jq &> /dev/null; then
 fi
 
 NAME=""
-MIN_SEVERITY="medium"
+# Default min-severity comes from ~/.sigil/config.json (silent fallback
+# to "medium" if config is missing/malformed). The --min-severity flag
+# below overrides for this invocation only. See docs/config.md.
+MIN_SEVERITY="$(sigil_config_get_min_severity)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
