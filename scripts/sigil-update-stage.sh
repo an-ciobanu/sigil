@@ -134,6 +134,11 @@ else
     fi
 fi
 
+# Canonicalize CLONE_DIR (resolves macOS /var <-> /private/var, etc.) so
+# all downstream paths in the labeled output are consistent — Repo: is
+# already pwd -P resolved when --path is used, and we want Clone: to
+# match for the markdown's "Clone + changed-file path" resolution rule.
+CLONE_DIR="$(cd "${CLONE_DIR}" && pwd -P)"
 NEW_SHA="$(git -C "${CLONE_DIR}" rev-parse HEAD)"
 
 # Already up-to-date short circuit. No diff to compute, no scan to run.
@@ -197,6 +202,16 @@ if [[ -n "${SUBPATH}" ]]; then
 fi
 git -C "${CLONE_DIR}" diff "${DIFF_ARGS[@]}" > "${DIFF_FILE}"
 
+# Also write the bare list of changed files. The diff-focused review
+# subagent uses this to filter vexscan findings to changes — pre-existing
+# findings in unchanged files are out of scope for an update review.
+CHANGED_FILES="${STAGE_ROOT}/changed-files.txt"
+DIFF_NAME_ARGS=("--name-only" "${CURRENT_SHA}" "${NEW_SHA}")
+if [[ -n "${SUBPATH}" ]]; then
+    DIFF_NAME_ARGS+=("--" "${SUBPATH}")
+fi
+git -C "${CLONE_DIR}" diff "${DIFF_NAME_ARGS[@]}" > "${CHANGED_FILES}"
+
 echo "Scanning with vexscan..." >&2
 # Capture vexscan's stderr to a sibling file rather than discarding it, so
 # a corrupt/empty scan.json downstream can be debugged from the stage dir.
@@ -237,9 +252,11 @@ read -r CRITICAL HIGH MEDIUM LOW INFO <<< "$(jq -r '
     echo "Old commit:  ${CURRENT_SHA}"
     echo "New commit:  ${NEW_SHA}"
     echo "Stage root:  ${STAGE_ROOT}"
+    echo "Clone:       ${CLONE_DIR}"
     echo "Repo:        ${REPO_DIR}"
     echo "Scan:        ${SCAN_JSON}"
     echo "Diff:        ${DIFF_FILE}"
+    echo "Changed:     ${CHANGED_FILES}"
     echo "Summary:     ${CRITICAL} critical, ${HIGH} high, ${MEDIUM} medium, ${LOW} low, ${INFO} info"
     echo ""
     echo "=== Vexscan findings (JSON) ==="
