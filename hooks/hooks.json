@@ -1,0 +1,18 @@
+{
+  "description": "Sigil session-start hooks",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sigil-session-check.sh",
+            "timeout": 30000,
+            "async": true,
+            "statusMessage": "Sigil: checking upstream sources..."
+          }
+        ]
+      }
+    ]
+  }
+}
