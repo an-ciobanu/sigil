@@ -52,6 +52,9 @@ NAME=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h) usage; exit 0 ;;
+        --accept-risky)
+            # Install-time flag handled by the markdown's gate. Consume and drop.
+            ;;
         --*)
             echo "ERROR: unknown flag: $1" >&2
             usage >&2

@@ -1,28 +1,39 @@
 ---
-description: Review a pending update for a tracked source — diff against the approved SHA, scan, Claude review, return a verdict.
-argument-hint: "<name>"
+description: Review and apply a pending update for a tracked source — diff against the approved SHA, scan, Claude review, install on approval.
+argument-hint: "<name> [--accept-risky]"
 allowed-tools: "Bash, Task"
 ---
 
 # /sigil:update
 
-Review a pending update for a Sigil-tracked source. Clones the upstream tip, diffs against the approved `current_sha`, runs vexscan on the new state, and has a Claude subagent review the **diff** semantically (not the full codebase). Returns a verdict.
-
-**Status: preview.** SIGIL-4.3 lands the review flow. The install gate (apply-on-approval, `--accept-risky`, manifest update) lands in SIGIL-4.4. For now, /sigil:update reviews and reports — it does NOT change anything on disk. Use `/sigil:remove` + `/sigil:add` to apply manually until 4.4 ships.
+Review a pending update for a Sigil-tracked source AND apply it if the verdict allows. Clones the upstream tip, diffs against the approved `current_sha`, runs vexscan on the new state, has a Claude subagent review the **diff** semantically (not the full codebase), and — gated on the verdict — atomically replaces the install_path and bumps `current_sha` + `installed_at` in the manifest.
 
 ## Usage
 
-- `/sigil:update <name>` — review the pending update for the named source.
+- `/sigil:update <name>` — review and (if the verdict allows) apply the update for the named source.
+- `/sigil:update <name> --accept-risky` — apply even if the verdict is `RISKY` (acknowledges you've reviewed the flagged code).
 
-`<name>` must match a Sigil-tracked entry. Find names with `/sigil:status`. Untracked entries (kind=untracked, no source URL) cannot be updated.
+`<name>` must match a Sigil-tracked entry. Find names with `/sigil:status`. Untracked entries (kind=untracked, no source URL) cannot be updated. Only `kind=claude-plugin` is supported in this story; `rust-cargo` will land in a follow-up.
+
+## Gate matrix
+
+| Verdict     | Without `--accept-risky` | With `--accept-risky` |
+|-------------|--------------------------|------------------------|
+| SAFE        | apply                    | apply                  |
+| CAUTION     | apply                    | apply                  |
+| RISKY       | refuse                   | apply                  |
+| DANGEROUS   | refuse                   | refuse                 |
+
+`DANGEROUS` is never apply-able via /sigil:update. If you disagree with a `DANGEROUS` verdict, /sigil:remove and /sigil:add a fresh approval — Sigil itself will not bump the manifest under a DANGEROUS verdict.
 
 ## What it does
 
 1. Stages the upstream tip via `sigil-update-stage.sh` (full clone, diff vs approved SHA, vexscan).
 2. Short-circuits if upstream HEAD already matches the approved SHA.
 3. Spawns a Task subagent that reviews **only the diff** and produces a verdict.
-4. Cleans up the staging directory.
-5. *(SIGIL-4.4 will add)*: gate the install on the verdict tier and `--accept-risky`, copy the new state into `install_path`, update the manifest's `current_sha`.
+4. Applies the gate matrix above.
+5. On approval, atomically swaps `install_path` (.git stripped) and bumps the manifest's `current_sha` + `installed_at`.
+6. Cleans up the staging directory regardless of whether the apply ran.
 
 ## Instructions
 
@@ -132,13 +143,29 @@ file:line references are enough; if the user wants to inspect, they
 can read the file.
 ```
 
-Step 4 — present the subagent's verdict to the user verbatim. After the verdict, append a single line so the preview semantics are unambiguous:
+Step 4 — parse the tier from the line `## Verdict: <TIER>` in the subagent's response. Apply the gate matrix using the tier and whether `$ARGUMENTS` contains `--accept-risky`:
+
+- `SAFE` or `CAUTION`: present the verdict to the user and proceed to Step 5.
+- `RISKY` and `--accept-risky` is set: present the verdict and proceed to Step 5.
+- `RISKY` without `--accept-risky`: present the verdict, then add a final paragraph saying:
+  `Update refused: verdict is RISKY. Re-run with --accept-risky to override.`
+  Skip to Step 6 (cleanup); do NOT call the apply script.
+- `DANGEROUS`: present the verdict, then add a final paragraph saying:
+  `Update refused: verdict is DANGEROUS. Sigil will not apply this update. If you disagree, /sigil:remove and /sigil:add a fresh approval.`
+  Skip to Step 6 (cleanup); do NOT call the apply script.
+
+Step 5 — apply. Run the apply script with values lifted from Step 1's output:
 
 ```
-(Preview: SIGIL-4.4 will add the install step. Use /sigil:remove and /sigil:add to apply manually for now.)
+${CLAUDE_PLUGIN_ROOT}/scripts/sigil-update-apply.sh \
+  --name <Name from Step 1> \
+  --new-sha <New commit from Step 1> \
+  --repo <Repo from Step 1>
 ```
 
-Step 5 — clean up the staging directory:
+Present the apply script's output to the user immediately after the verdict.
+
+Step 6 — clean up the staging directory regardless of whether the apply ran:
 
 ```
 ${CLAUDE_PLUGIN_ROOT}/scripts/sigil-cleanup-stage.sh <Stage root from Step 1>
