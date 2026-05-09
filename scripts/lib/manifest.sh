@@ -41,6 +41,13 @@
 #   current_sha   (string, required for claude-plugin / rust-cargo)
 #                                     — 40-char lowercase hex git commit
 #                                       SHA the user approved.
+#   branch        (string, optional)  — non-default ref the source was
+#                                       cloned from (`--branch` on add).
+#                                       Re-used by /sigil:update so the
+#                                       same ref is followed for updates.
+#   path          (string, optional)  — subdirectory of the cloned repo
+#                                       that was installed (`--path` on
+#                                       add). Re-used by /sigil:update.
 #   notes         (string, optional)  — free-form note from /sigil:add.
 # ────────────────────────────────────────────────────────────────────────
 

@@ -25,8 +25,15 @@ usage() {
     cat <<EOF
 Usage: sigil-add-install.sh \\
          --url <git-url> --commit <sha> --name <name> --kind <kind> --repo <repo-path>
+         [--branch <ref>] [--path <subpath>]
 
-Only kind=claude-plugin is supported in this story (SIGIL-3.3).
+Required: --url, --commit, --name, --kind, --repo.
+Optional: --branch (recorded in the manifest entry if the source was
+                    cloned from a non-default ref),
+          --path   (recorded if the install is from a subdirectory of
+                    the cloned repo).
+
+Only kind=claude-plugin is supported.
 EOF
 }
 
@@ -40,6 +47,8 @@ COMMIT=""
 NAME=""
 KIND=""
 REPO=""
+BRANCH=""
+SUBPATH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,6 +57,8 @@ while [[ $# -gt 0 ]]; do
         --name)   shift; NAME="${1:-}" ;;
         --kind)   shift; KIND="${1:-}" ;;
         --repo)   shift; REPO="${1:-}" ;;
+        --branch) shift; BRANCH="${1:-}" ;;
+        --path)   shift; SUBPATH="${1:-}" ;;
         --help|-h) usage; exit 0 ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
@@ -133,14 +144,21 @@ do_install() {
 
     local installed_at entry
     installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # branch and path are written to the manifest only when the user
+    # actually used those flags, so the entry stays minimal in the
+    # default case and /sigil:update can re-clone with the same args.
     entry="$(jq -n \
-        --arg name   "${NAME}" \
-        --arg kind   "${KIND}" \
-        --arg src    "${URL}" \
-        --arg sha    "${COMMIT}" \
-        --arg path   "${INSTALL_PATH}" \
-        --arg ts     "${installed_at}" \
-        '{name:$name, kind:$kind, source:$src, current_sha:$sha, install_path:$path, installed_at:$ts}')"
+        --arg name    "${NAME}" \
+        --arg kind    "${KIND}" \
+        --arg src     "${URL}" \
+        --arg sha     "${COMMIT}" \
+        --arg path    "${INSTALL_PATH}" \
+        --arg ts      "${installed_at}" \
+        --arg branch  "${BRANCH}" \
+        --arg subpath "${SUBPATH}" \
+        '{name:$name, kind:$kind, source:$src, current_sha:$sha, install_path:$path, installed_at:$ts}
+         | if $branch  != "" then . + {branch:  $branch}  else . end
+         | if $subpath != "" then . + {path:    $subpath} else . end')"
 
     if ! sigil_manifest_add "${entry}"; then
         # Roll back the filesystem so we don't end up half-installed.

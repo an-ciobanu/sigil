@@ -1,6 +1,6 @@
 ---
 description: Vet a plugin source and install it if the verdict allows. Combines /sigil:check with a kind-aware install gated on the verdict tier.
-argument-hint: "<git-url> [--name <name>] [--kind claude-plugin] [--accept-risky]"
+argument-hint: "<git-url> [--name <n>] [--kind claude-plugin] [--branch <ref>] [--path <subpath>] [--accept-risky]"
 allowed-tools: "Bash, Task"
 ---
 
@@ -13,6 +13,8 @@ Vet a plugin source AND install it. Combines `/sigil:check`'s clone+scan+review 
 - `/sigil:add <git-url>` — vet, then install as `kind=claude-plugin` named after the repo basename.
 - `/sigil:add <git-url> --name <name>` — override the manifest name.
 - `/sigil:add <git-url> --kind <kind>` — override the kind. **v1: only `claude-plugin` is supported here.** Use `scripts/sigil-bootstrap-vexscan.sh` for vexscan; general `rust-cargo` support comes later.
+- `/sigil:add <git-url> --branch <ref>` — vet and install from a non-default branch, tag, or commit SHA. Recorded in the manifest so `/sigil:update` follows the same ref.
+- `/sigil:add <git-url> --path <subpath>` — vet and install only a subdirectory of the clone (e.g. `--path plugin` for monorepo layouts like `vexscan-claude-code`). Recorded in the manifest.
 - `/sigil:add <git-url> --accept-risky` — install even if the verdict is `RISKY` (acknowledges you've reviewed the flagged code).
 
 ## Gate matrix
@@ -137,7 +139,7 @@ Step 5 — install. Determine the install args:
 - `name`: the user's `--name` value if present, otherwise the repo basename derived from the URL (strip trailing `.git`).
 - `kind`: the user's `--kind` value if present, otherwise default `claude-plugin`.
 
-Then run the install script with values lifted from Step 1's output:
+Then run the install script with values lifted from Step 1's output. Forward `--branch` and `--path` only if Step 1's output actually contained `Branch:` and `Path:` lines — if those lines aren't present, omit the corresponding flag entirely (do NOT pass literal brackets or empty strings):
 
 ```
 ${CLAUDE_PLUGIN_ROOT}/scripts/sigil-add-install.sh \
@@ -145,7 +147,9 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/sigil-add-install.sh \
   --commit <Commit from Step 1> \
   --name <name> \
   --kind <kind> \
-  --repo <Repo from Step 1>
+  --repo <Repo from Step 1> \
+  [--branch <Branch from Step 1>] \
+  [--path <Path from Step 1>]
 ```
 
 Present the install script's output to the user immediately after the verdict.
